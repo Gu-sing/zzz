@@ -1,0 +1,6 @@
+cd /home/gusing
+git add README.md desktop_schedule.py
+git commit -m "Add desktop schedule widget"
+git branch -M main
+git remote add origin https://github.com/你的用户名/咕咕嘎嘎.git
+git push -u origin main
