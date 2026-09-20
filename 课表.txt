@@ -1,6 +1,275 @@
-cd /home/gusing
-git add README.md desktop_schedule.py
-git commit -m "Add desktop schedule widget"
-git branch -M main
-git remote add origin https://github.com/你的用户名/咕咕嘎嘎.git
-git push -u origin main
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import datetime as dt
+import subprocess
+import tkinter as tk
+from tkinter import ttk
+
+# 0=周一, 1=周二, 2=周三, 3=周四, 4=周五, 5=周六, 6=周日
+# 设置为 None 时使用系统当前日期自动判断
+DISPLAY_WEEKDAY_OVERRIDE = None
+
+COURSES = [
+    {"day": 0, "time": "08:00-09:35", "name": "力学", "room": "教学楼 403"},
+    {"day": 0, "time": "09:55-11:30", "name": "数学分析 BI", "room": "逸夫楼 501"},
+    {"day": 0, "time": "13:00-15:35", "name": "物理学专业发展", "room": "教学楼 403"},
+
+    {"day": 1, "time": "08:00-09:35", "name": "力学", "room": "教学楼 403"},
+    {"day": 1, "time": "09:55-11:30", "name": "数学分析 BI", "room": "逸夫楼 501"},
+
+    {"day": 2, "time": "08:00-09:35", "name": "力学", "room": "教学楼 403"},
+    {"day": 2, "time": "09:55-11:30", "name": "数学分析 BI", "room": "逸夫楼 501"},
+
+    {"day": 3, "time": "14:00-15:35", "name": "体育 I / 篮球", "room": "体育馆"},
+
+    {"day": 4, "time": "14:00-15:35", "name": "习近平新时代中国特色社会主义思想", "room": "逸夫楼 402"},
+]
+
+
+def time_to_minutes(text: str):
+    h, m = map(int, text.split(":"))
+    return h * 60 + m
+
+
+def parse_class_time(slot: str):
+    start, end = slot.split("-")
+    return time_to_minutes(start), time_to_minutes(end)
+
+
+def get_effective_weekday():
+    if DISPLAY_WEEKDAY_OVERRIDE is not None:
+        return DISPLAY_WEEKDAY_OVERRIDE
+    return dt.datetime.now().weekday()
+
+
+def get_today_courses():
+    today = get_effective_weekday()
+    return [course for course in COURSES if course["day"] == today]
+
+
+def format_today_label():
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    today_index = get_effective_weekday()
+    now = dt.datetime.now()
+    return now.strftime("%Y-%m-%d") + " " + weekday_names[today_index]
+
+
+def get_course_state():
+    courses = get_today_courses()
+    if not courses:
+        return {"type": "none", "msg": "今天没有课，休息一下吧！"}
+
+    now = dt.datetime.now()
+    current_minutes = now.hour * 60 + now.minute
+    sorted_courses = sorted(courses, key=lambda c: parse_class_time(c["time"].split(" ")[0])[0])
+
+    for course in sorted_courses:
+        start, end = parse_class_time(course["time"].split(" ")[0])
+        if start <= current_minutes < end:
+            return {
+                "type": "current",
+                "course": course,
+                "msg": f"正在上课：{course['name']} ({course['time']})",
+                "remaining": end - current_minutes,
+            }
+
+    for course in sorted_courses:
+        start, end = parse_class_time(course["time"].split(" ")[0])
+        if current_minutes < start:
+            return {
+                "type": "next",
+                "course": course,
+                "msg": f"下一节：{course['name']} {course['time']}",
+                "remaining": start - current_minutes,
+            }
+
+    return {"type": "done", "msg": "今天的课程已经结束，明天继续加油！"}
+
+
+def send_desktop_notification(title: str, message: str):
+    try:
+        subprocess.run(
+            ["notify-send", title, message],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
+
+
+class FloatingSchedule:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("桌面课表")
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", 0.82)
+        self.root.configure(bg="#1b1f2a")
+
+        self.dragging = False
+        self.offset_x = 0
+        self.offset_y = 0
+
+        self.container = tk.Frame(root, bg="#1f2430", padx=10, pady=8, highlightthickness=0)
+        self.container.pack(fill="both", expand=True)
+
+        self.header = tk.Frame(self.container, bg="#1f2430")
+        self.header.pack(fill="x", pady=(0, 4))
+
+        self.title_label = tk.Label(
+            self.header,
+            text="课表",
+            bg="#1f2430",
+            fg="#dfe9ff",
+            font=("Microsoft YaHei", 11, "bold"),
+            anchor="w",
+        )
+        self.title_label.pack(side="left", fill="x", expand=True)
+
+        self.close_btn = tk.Button(
+            self.header,
+            text="×",
+            bg="#1f2430",
+            fg="#ffb4b4",
+            bd=0,
+            activebackground="#2a3242",
+            command=root.destroy,
+            cursor="hand2",
+            font=("Microsoft YaHei", 10, "bold"),
+        )
+        self.close_btn.pack(side="right")
+
+        self.date_label = tk.Label(
+            self.container,
+            text=format_today_label(),
+            bg="#1f2430",
+            fg="#8fe7c0",
+            font=("Microsoft YaHei", 9, "bold"),
+            anchor="w",
+        )
+        self.date_label.pack(fill="x", pady=(0, 6))
+
+        self.tree = ttk.Treeview(
+            self.container,
+            columns=("time", "course"),
+            show="headings",
+            height=5,
+        )
+        self.tree.heading("time", text="时间")
+        self.tree.heading("course", text="课程")
+        self.tree.column("time", width=72, anchor="center")
+        self.tree.column("course", width=150, anchor="center")
+
+        self.tree.tag_configure("current", background="#36b48a", foreground="#ffffff")
+        self.tree.tag_configure("upcoming", background="#4d6fa8", foreground="#ffffff")
+        self.tree.tag_configure("normal", background="#2b3140", foreground="#edf5ff")
+
+        self.tree.pack(fill="both", expand=True)
+
+        self.status_var = tk.StringVar()
+        self.status_label = tk.Label(
+            self.container,
+            textvariable=self.status_var,
+            bg="#1f2430",
+            fg="#f3d3a4",
+            font=("Microsoft YaHei", 9, "bold"),
+            justify="center",
+            wraplength=260,
+            pady=4,
+        )
+        self.status_label.pack(fill="x", pady=(4, 6))
+
+        self.last_notified_key = None
+        self.bind_drag()
+
+        self.root.geometry("290x240+20+60")
+        self.refresh_schedule()
+        self.root.after(30000, self.refresh_schedule_loop)
+
+    def bind_drag(self):
+        self.root.bind("<ButtonPress-1>", self.on_press)
+        self.root.bind("<B1-Motion>", self.on_drag)
+        self.root.bind("<ButtonRelease-1>", self.on_release)
+        self.tree.bind("<ButtonPress-1>", self.on_press)
+        self.tree.bind("<B1-Motion>", self.on_drag)
+        self.tree.bind("<ButtonRelease-1>", self.on_release)
+
+    def on_press(self, event):
+        self.dragging = True
+        self.offset_x = event.x_root - self.root.winfo_rootx()
+        self.offset_y = event.y_root - self.root.winfo_rooty()
+
+    def on_drag(self, event):
+        if self.dragging:
+            x = event.x_root - self.offset_x
+            y = event.y_root - self.offset_y
+            self.root.geometry(f"+{x}+{y}")
+
+    def on_release(self, event):
+        self.dragging = False
+
+    def refresh_schedule(self):
+        self.date_label.config(text=format_today_label())
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        courses = get_today_courses()
+        if not courses:
+            self.tree.insert("", "end", values=("—", "今天没课"), tags=("normal",))
+            self.status_var.set("今天没有课，放松一下吧！")
+            return
+
+        now = dt.datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+
+        for course in courses:
+            time_text = course["time"]
+            start, end = parse_class_time(time_text.split(" ")[0])
+            display_text = f"{course['name']}\n{course['room']}"
+            tag = "normal"
+
+            if start <= current_minutes < end:
+                tag = "current"
+            elif current_minutes < start:
+                tag = "upcoming"
+
+            self.tree.insert("", "end", values=(time_text, display_text), tags=(tag,))
+
+        state = get_course_state()
+        if state["type"] == "current":
+            course = state["course"]
+            self.status_var.set(f"正在上课：{course['name']}，还剩 {state['remaining']} 分钟")
+            self._maybe_notify(course, "正在上课", state)
+        elif state["type"] == "next":
+            course = state["course"]
+            self.status_var.set(f"下一节：{course['name']}，{state['remaining']} 分钟后开始")
+            self._maybe_notify(course, "课前提醒", state)
+        else:
+            self.status_var.set(state["msg"])
+            self.last_notified_key = None
+
+    def _maybe_notify(self, course, title, state):
+        key = f"{course['day']}-{course['time']}-{course['name']}"
+        if state["type"] == "next" and 0 <= state["remaining"] <= 15:
+            if self.last_notified_key != key:
+                send_desktop_notification(
+                    title,
+                    f"下一节课：{course['name']}\n时间：{course['time']}\n教室：{course['room']}\n{state['remaining']} 分钟后开始",
+                )
+                self.last_notified_key = key
+        elif state["type"] == "current":
+            self.last_notified_key = key
+
+    def refresh_schedule_loop(self):
+        self.refresh_schedule()
+        self.root.after(30000, self.refresh_schedule_loop)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.configure(bg="#1f2430")
+    app = FloatingSchedule(root)
+    root.mainloop()
